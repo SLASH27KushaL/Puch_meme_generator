@@ -1,14 +1,18 @@
 import { motion } from "framer-motion";
+import { useNavigate } from "react-router-dom";
 
 export default function Hero() {
+  const navigate = useNavigate();
+
   return (
     <section className="relative min-h-screen flex flex-col justify-center items-center px-6 text-white overflow-hidden">
-      {/* Inline gradient animation style */}
+      {/* Local CSS for gradient animation */}
       <style>
         {`
-          @keyframes gradientMove {
-            0%, 100% { background-position: 0% 50%; }
+          @keyframes blackishGradient {
+            0% { background-position: 0% 50%; }
             50% { background-position: 100% 50%; }
+            100% { background-position: 0% 50%; }
           }
         `}
       </style>
@@ -17,9 +21,10 @@ export default function Hero() {
       <div
         className="absolute inset-0"
         style={{
-          background: "linear-gradient(-45deg, #0f172a, #1e1b4b, #312e81, #1e3a8a)",
+          background:
+            "linear-gradient(-45deg, #000000, #111111, #1a1a1a, #0a0a0a)",
           backgroundSize: "300% 300%",
-          animation: "gradientMove 10s ease infinite",
+          animation: "blackishGradient 12s ease infinite",
         }}
       />
 
@@ -47,9 +52,10 @@ export default function Hero() {
         <motion.button
           whileHover={{ scale: 1.05 }}
           whileTap={{ scale: 0.95 }}
+          onClick={() => navigate("/Home")}
           className="px-10 py-4 text-lg font-semibold border border-white rounded-full hover:bg-white hover:text-black transition-colors duration-200"
         >
-          Generate Memes
+          Get Started
         </motion.button>
       </div>
 
