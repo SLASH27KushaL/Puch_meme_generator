@@ -1,16 +1,27 @@
 import React, { useEffect, useState, useRef } from "react";
-import { Type, Download, Copy, ArrowLeft, Star, Sun, Moon } from "lucide-react";
+import { Type, Download, Copy, ArrowLeft, Star, Sun, Moon, ImagePlus } from "lucide-react";
 import { useLocation, useNavigate } from "react-router-dom";
 
 interface TextPosition {
   id: string;
   text: string;
-  x: number;
-  y: number;
+  x: number; // percent
+  y: number; // percent
   fontSize: number;
   color: string;
   fontWeight: string;
   textShadow: boolean;
+}
+
+interface OverlayImage {
+  id: string;
+  src: string; // object URL or remote URL
+  x: number; // percent
+  y: number; // percent
+  width: number; // percent of container width
+  height: number; // percent of container height (auto if 0)
+  aspect?: number; // natural height/width ratio (height/width)
+  rotation?: number; // degrees
 }
 
 const Selected: React.FC = () => {
@@ -54,6 +65,28 @@ const Selected: React.FC = () => {
 
   const activeText = textPositions.find((p) => p.id === activeTextId);
 
+  // overlay images state
+  const [overlayImages, setOverlayImages] = useState<OverlayImage[]>([]);
+  const [activeImageId, setActiveImageId] = useState<string | null>(null);
+
+  const activeImage = overlayImages.find((p) => p.id === activeImageId);
+
+  // refs
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const inputFileRef = useRef<HTMLInputElement | null>(null);
+
+  // drag state kept in ref to avoid excessive rerenders
+  const dragRef = useRef<{
+    dragging: boolean;
+    pointerId?: number;
+    imageId?: string | null;
+    startPointerX: number;
+    startPointerY: number;
+    startImageX: number;
+    startImageY: number;
+    containerRect?: DOMRect;
+  }>({ dragging: false, startPointerX: 0, startPointerY: 0, startImageX: 0, startImageY: 0, imageId: null });
+
   // theme tokens (single-file)
   const rootBg = isDark ? "bg-gray-900 text-white" : "bg-white text-gray-900";
   const panelBg = isDark ? "bg-neutral-800 border-neutral-700" : "bg-white border-gray-200";
@@ -61,11 +94,10 @@ const Selected: React.FC = () => {
   const subtleText = isDark ? "text-neutral-300" : "text-neutral-600";
 
   // ----------------------------
-  // NEW: read template passed by router (preferred via location.state) or fallback to query params
+  // read template passed by router (preferred via location.state) or fallback to query params
   // ----------------------------
   const location = useLocation();
   const navigate = useNavigate();
-  // prefer state (navigate("/selected", { state: { template } }))
   const stateTemplate = (location.state && (location.state as any).template) ?? null;
   const params = new URLSearchParams(location.search);
   const fallbackUrl = params.get("url") ?? "";
@@ -73,53 +105,66 @@ const Selected: React.FC = () => {
   const templateUrl = stateTemplate?.url ?? fallbackUrl;
   const templateName = stateTemplate?.name ?? fallbackName;
 
-  // Ref for image container
-  const containerRef = useRef<HTMLDivElement>(null);
+  // Helper to load image (ensures we have naturalWidth/height and uses CORS if possible)
+  const loadImageElement = (url: string) =>
+    new Promise<HTMLImageElement>((resolve, reject) => {
+      try {
+        const img = new Image();
+        img.crossOrigin = "anonymous"; // attempt to avoid tainting the canvas
+        img.onload = () => resolve(img);
+        img.onerror = (err) => reject(err);
+        img.src = url;
+      } catch (err) {
+        reject(err);
+      }
+    });
 
-  // Download handler
+  // Download handler (also draws overlay images)
   const handleDownload = async () => {
     const container = containerRef.current;
     if (!container) return;
 
-    const imgElement = container.querySelector("img");
-    if (!imgElement) {
+    const baseImgElement = container.querySelector("img.base-template") as HTMLImageElement | null;
+    if (!baseImgElement || !baseImgElement.src) {
       alert("Image not available for download");
       return;
     }
-
-    const src = (imgElement as HTMLImageElement).src;
-    if (!src) {
-      alert("Image not available for download");
-      return;
-    }
-
-    // Helper to load image (ensures we have naturalWidth/height and uses CORS if possible)
-    const loadImage = (url: string) =>
-      new Promise<HTMLImageElement>((resolve, reject) => {
-        try {
-          const img = new Image();
-          img.crossOrigin = "anonymous"; // attempt to avoid tainting the canvas
-          img.onload = () => resolve(img);
-          img.onerror = (err) => reject(err);
-          img.src = url;
-        } catch (err) {
-          reject(err);
-        }
-      });
 
     try {
-      const img = await loadImage(src);
+      const baseImg = await loadImageElement(baseImgElement.src);
 
       const canvas = document.createElement("canvas");
       const ctx = canvas.getContext("2d");
       if (!ctx) throw new Error("Canvas not supported");
 
       // Use natural size for high quality
-      canvas.width = img.naturalWidth || img.width;
-      canvas.height = img.naturalHeight || img.height;
+      canvas.width = baseImg.naturalWidth || baseImg.width;
+      canvas.height = baseImg.naturalHeight || baseImg.height;
 
       // Draw base image
-      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+      ctx.drawImage(baseImg, 0, 0, canvas.width, canvas.height);
+
+      // Draw overlay images in order
+      for (const ov of overlayImages) {
+        try {
+          const img = await loadImageElement(ov.src);
+          // compute pixel positions
+          const imgW = (ov.width / 100) * canvas.width;
+          // maintain aspect ratio if height is 0
+          const imgH = ov.height > 0 ? (ov.height / 100) * canvas.height : (img.naturalHeight / img.naturalWidth) * imgW;
+
+          // draw with rotation around center
+          const cx = (ov.x / 100) * canvas.width;
+          const cy = (ov.y / 100) * canvas.height;
+          ctx.save();
+          ctx.translate(cx, cy);
+          if (ov.rotation) ctx.rotate((ov.rotation * Math.PI) / 180);
+          ctx.drawImage(img, -imgW / 2, -imgH / 2, imgW, imgH);
+          ctx.restore();
+        } catch (err) {
+          console.warn("Failed to draw overlay image", ov.src, err);
+        }
+      }
 
       // Configure text styles
       ctx.textAlign = "center";
@@ -127,6 +172,7 @@ const Selected: React.FC = () => {
 
       // Draw text overlays
       textPositions.forEach((t) => {
+        if (!t.text || !t.text.trim()) return;
         const x = (t.x / 100) * canvas.width;
         const y = (t.y / 100) * canvas.height;
 
@@ -161,9 +207,148 @@ const Selected: React.FC = () => {
       document.body.removeChild(link);
     } catch (error) {
       console.error("Download failed:", error);
-      alert("Failed to generate image. This may be caused by cross-origin restrictions on the source image. Try using an image served with CORS enabled.");
+      alert("Failed to generate image. This may be caused by cross-origin restrictions on the source image. Try using an image served with CORS enabled or uploaded images.");
     }
   };
+
+  // Image upload handler
+  const onAddImageClick = () => {
+    inputFileRef.current?.click();
+  };
+
+  const handleFileChange: React.ChangeEventHandler<HTMLInputElement> = async (e) => {
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+    const url = URL.createObjectURL(file);
+    const newId = `img_${Date.now()}`;
+
+    try {
+      const loaded = await loadImageElement(url);
+      const aspect = loaded.naturalHeight / loaded.naturalWidth;
+      // add centered with 30% width and auto height
+      setOverlayImages((prev) => [
+        ...prev,
+        { id: newId, src: url, x: 50, y: 50, width: 30, height: 0, aspect, rotation: 0 },
+      ]);
+      setActiveImageId(newId);
+    } catch (err) {
+      // fallback if load fails
+      setOverlayImages((prev) => [
+        ...prev,
+        { id: newId, src: url, x: 50, y: 50, width: 30, height: 0, rotation: 0 },
+      ]);
+      setActiveImageId(newId);
+    }
+
+    // clear input so same file can be re-selected later
+    e.currentTarget.value = "";
+  };
+
+  const updateOverlayImage = (id: string | null, changes: Partial<OverlayImage>) => {
+    if (!id) return;
+    setOverlayImages((prev) => prev.map((i) => (i.id === id ? { ...i, ...changes } : i)));
+  };
+
+  const toggleAutoHeightForActive = () => {
+    if (!activeImageId) return;
+    const ov = overlayImages.find((i) => i.id === activeImageId);
+    if (!ov) return;
+    const container = containerRef.current;
+    // if currently auto (height === 0) we want to compute an explicit height from DOM
+    if (ov.height === 0) {
+      try {
+        const imgEl = container?.querySelector(`img[data-id="${ov.id}"]`) as HTMLImageElement | null;
+        if (container && imgEl) {
+          const rect = container.getBoundingClientRect();
+          const imgRect = imgEl.getBoundingClientRect();
+          const heightPercent = (imgRect.height / rect.height) * 100;
+          updateOverlayImage(ov.id, { height: Math.max(1, Math.min(100, Math.round(heightPercent))) });
+          return;
+        }
+      } catch {}
+      // fallback explicit height
+      updateOverlayImage(ov.id, { height: 30 });
+    } else {
+      // set to auto
+      updateOverlayImage(ov.id, { height: 0 });
+    }
+  };
+
+  const deleteSelectedImage = () => {
+    if (!activeImageId) return;
+    const toDelete = overlayImages.find((i) => i.id === activeImageId);
+    if (!toDelete) return;
+    if (!confirm("Delete selected image?")) return;
+    setOverlayImages((prev) => prev.filter((i) => i.id !== activeImageId));
+    try {
+      if (toDelete.src.startsWith("blob:")) URL.revokeObjectURL(toDelete.src);
+    } catch {}
+    setActiveImageId(null);
+  };
+
+  // pointer-based dragging handlers for overlay images
+  const onImagePointerDown = (e: React.PointerEvent, imageId: string) => {
+    const target = e.currentTarget as HTMLElement;
+    target.setPointerCapture(e.pointerId);
+
+    const container = containerRef.current;
+    if (!container) return;
+
+    const containerRect = container.getBoundingClientRect();
+
+    const img = overlayImages.find((i) => i.id === imageId);
+    if (!img) return;
+
+    dragRef.current = {
+      dragging: true,
+      pointerId: e.pointerId,
+      imageId: imageId,
+      startPointerX: e.clientX,
+      startPointerY: e.clientY,
+      startImageX: img.x,
+      startImageY: img.y,
+      containerRect,
+    };
+    setActiveImageId(imageId);
+  };
+
+  const onPointerMoveWindow = (e: PointerEvent) => {
+    if (!dragRef.current.dragging) return;
+    if (e.pointerId !== dragRef.current.pointerId) return;
+    const d = dragRef.current;
+    const rect = d.containerRect!;
+    const dx = e.clientX - d.startPointerX;
+    const dy = e.clientY - d.startPointerY;
+
+    const newX = ((d.startImageX / 100) * rect.width + dx) / rect.width * 100;
+    const newY = ((d.startImageY / 100) * rect.height + dy) / rect.height * 100;
+
+    setOverlayImages((prev) => prev.map((im) => (im.id === d.imageId ? { ...im, x: Math.max(0, Math.min(100, newX)), y: Math.max(0, Math.min(100, newY)) } : im)));
+  };
+
+  const onPointerUpWindow = (e: PointerEvent) => {
+    if (!dragRef.current.dragging) return;
+    if (e.pointerId !== dragRef.current.pointerId) return;
+    dragRef.current.dragging = false;
+    dragRef.current.imageId = null;
+    dragRef.current.pointerId = undefined;
+  };
+
+  useEffect(() => {
+    window.addEventListener("pointermove", onPointerMoveWindow);
+    window.addEventListener("pointerup", onPointerUpWindow);
+    return () => {
+      window.removeEventListener("pointermove", onPointerMoveWindow);
+      window.removeEventListener("pointerup", onPointerUpWindow);
+      // revoke object urls
+      overlayImages.forEach((ov) => {
+        try {
+          if (ov.src.startsWith("blob:")) URL.revokeObjectURL(ov.src);
+        } catch {}
+      });
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [overlayImages]);
 
   return (
     <div className={`${rootBg} min-h-screen flex flex-col transition-colors duration-200`}>
@@ -210,24 +395,25 @@ const Selected: React.FC = () => {
 
                   {/* Fixed size image container that maintains original dimensions */}
                   <div className="flex justify-center">
-                    <div className="relative inline-block" ref={containerRef}>
+                    <div className="relative inline-block" ref={containerRef} style={{ touchAction: 'none' }}>
                       {templateUrl ? (
                         <img
                           src={decodeURIComponent(templateUrl)}
                           alt={templateName}
                           crossOrigin="anonymous"
-                          className="block rounded-md"
+                          className="block rounded-md base-template"
                           style={{
                             maxWidth: "100%",
                             height: "auto",
-                            maxHeight: "70vh"
+                            maxHeight: "70vh",
+                            display: 'block'
                           }}
                           onError={(e) => {
                             (e.currentTarget as HTMLImageElement).style.display = "none";
                           }}
                         />
                       ) : (
-                        <div 
+                        <div
                           className={`rounded-md flex items-center justify-center border-2 border-dashed ${isDark ? "border-neutral-700 bg-neutral-800" : "border-gray-200 bg-gray-100"}`}
                           style={{ width: "500px", height: "400px" }}
                         >
@@ -235,32 +421,62 @@ const Selected: React.FC = () => {
                         </div>
                       )}
 
-                      {/* Text overlays positioned absolutely over the image */}
-                      <div className="absolute inset-0 pointer-events-none">
-                        {textPositions.map((t) => (
-                          <div
-                            key={t.id}
+                      {/* Overlay images (pointer events enabled so they can be dragged) */}
+                      <div className="absolute inset-0">
+                        {overlayImages.map((ov) => (
+                          <img
+                            key={ov.id}
+                            src={ov.src}
+                            onPointerDown={(e) => onImagePointerDown(e, ov.id)}
+                            data-id={ov.id}
                             style={{
-                              position: "absolute",
-                              left: `${t.x}%`,
-                              top: `${t.y}%`,
-                              transform: "translate(-50%, -50%)",
-                              fontSize: `${t.fontSize}px`,
-                              color: t.color,
-                              fontWeight: t.fontWeight as any,
-                              textShadow: t.textShadow ? "2px 2px 6px rgba(0,0,0,0.7)" : "none",
-                              fontFamily: "'Impact', Arial Black, sans-serif",
-                              textTransform: "uppercase",
-                              letterSpacing: "1px",
-                              whiteSpace: "pre-wrap",
-                              textAlign: "center",
-                              padding: "0 8px",
+                              position: 'absolute',
+                              left: `${ov.x}%`,
+                              top: `${ov.y}%`,
+                              transform: `translate(-50%, -50%) rotate(${ov.rotation ?? 0}deg)`,
+                              transformOrigin: 'center',
+                              width: `${ov.width}%`,
+                              height: ov.height > 0 ? `${ov.height}%` : 'auto',
+                              touchAction: 'none',
+                              cursor: activeImageId === ov.id ? 'grabbing' : 'grab',
+                              userSelect: 'none',
+                              pointerEvents: 'auto',
+                              maxWidth: '100%'
                             }}
-                            className="select-none"
-                          >
-                            {t.text || "Edit me"}
-                          </div>
+                            draggable={false}
+                            alt="overlay"
+                          />
                         ))}
+
+                        {/* Text overlays positioned absolutely over the image (pointer-events none so dragging images works smoothly) */}
+                        <div style={{ position: 'absolute', inset: 0, pointerEvents: 'none' }}>
+                          {textPositions.map((t) =>
+                            (t.text && t.text.trim()) ? (
+                              <div
+                                key={t.id}
+                                style={{
+                                  position: 'absolute',
+                                  left: `${t.x}%`,
+                                  top: `${t.y}%`,
+                                  transform: 'translate(-50%, -50%)',
+                                  fontSize: `${t.fontSize}px`,
+                                  color: t.color,
+                                  fontWeight: t.fontWeight as any,
+                                  textShadow: t.textShadow ? '2px 2px 6px rgba(0,0,0,0.7)' : 'none',
+                                  fontFamily: "'Impact', Arial Black, sans-serif",
+                                  textTransform: 'uppercase',
+                                  letterSpacing: '1px',
+                                  whiteSpace: 'pre-wrap',
+                                  textAlign: 'center',
+                                  padding: '0 8px',
+                                }}
+                                className="select-none"
+                              >
+                                {t.text}
+                              </div>
+                            ) : null
+                          )}
+                        </div>
                       </div>
                     </div>
                   </div>
@@ -389,8 +605,93 @@ const Selected: React.FC = () => {
             </div>
           )}
 
+          {/* Image controls */}
           <div className="pt-4 mt-4 border-t flex flex-col gap-3">
-            <button 
+            <input ref={inputFileRef} type="file" accept="image/*" className="hidden" onChange={handleFileChange} />
+            <button
+              onClick={onAddImageClick}
+              className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded bg-green-600 text-white hover:bg-green-700"
+              title="Add image"
+            >
+              <ImagePlus size={16} /> Add image
+            </button>
+
+            {/* quick list of overlay images */}
+            <div className="flex gap-2 overflow-x-auto py-2">
+              {overlayImages.map((ov) => (
+                <button
+                  key={ov.id}
+                  onClick={() => setActiveImageId(ov.id)}
+                  className={`p-1 rounded border ${activeImageId === ov.id ? 'ring-2 ring-blue-500' : ''}`}
+                >
+                  <img src={ov.src} alt="thumb" style={{ width: 60, height: 40, objectFit: 'cover', display: 'block' }} />
+                </button>
+              ))}
+            </div>
+
+            <button
+              onClick={() => deleteSelectedImage()}
+              disabled={!activeImageId}
+              className={`w-full flex items-center justify-center gap-2 px-3 py-2 rounded ${!activeImageId ? 'opacity-50 cursor-not-allowed' : 'bg-red-600 hover:bg-red-700'} text-white`}
+              title="Delete selected image"
+            >
+              Delete image
+            </button>
+
+            {activeImageId && (
+              <div className="space-y-3 pt-2">
+                <div className="text-sm font-semibold">Resize selected image</div>
+
+                <div>
+                  <label className={`block text-xs mb-1 ${subtleText}`}>Width (% of canvas)</label>
+                  <input
+                    type="range"
+                    min={5}
+                    max={100}
+                    value={activeImage ? activeImage.width : 30}
+                    onChange={(e) => updateOverlayImage(activeImageId, { width: Number(e.target.value) })}
+                    className="w-full"
+                  />
+                </div>
+
+                <div>
+                  <label className={`block text-xs mb-1 ${subtleText}`}>Height</label>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={toggleAutoHeightForActive}
+                      className={`px-2 py-1 rounded border ${activeImage && activeImage.height === 0 ? 'bg-gray-200 dark:bg-neutral-700' : ''}`}
+                      type="button"
+                    >
+                      {activeImage && activeImage.height === 0 ? 'Auto (maintain aspect)' : 'Fixed'}
+                    </button>
+
+                    <input
+                      type="range"
+                      min={1}
+                      max={100}
+                      value={activeImage ? (activeImage.height === 0 ? 30 : activeImage.height) : 30}
+                      onChange={(e) => updateOverlayImage(activeImageId, { height: Number(e.target.value) })}
+                      className={`w-full ${activeImage && activeImage.height === 0 ? 'opacity-50 pointer-events-none' : ''}`}
+                      disabled={activeImage ? activeImage.height === 0 : false}
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label className={`block text-xs mb-1 ${subtleText}`}>Rotation (°)</label>
+                  <input
+                    type="range"
+                    min={-180}
+                    max={180}
+                    value={activeImage ? (activeImage.rotation ?? 0) : 0}
+                    onChange={(e) => updateOverlayImage(activeImageId, { rotation: Number(e.target.value) })}
+                    className="w-full"
+                  />
+                </div>
+              </div>
+            )}
+
+            <button
               onClick={handleDownload}
               className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded bg-blue-600 text-white hover:bg-blue-700"
             >
